@@ -11,6 +11,8 @@ test("normalizes token creation payload", () => {
     marketCapSol: 31.25,
     vSolInBondingCurve: 12,
     vTokensInBondingCurve: 999,
+    pool: "pump",
+    chain: "solana",
   });
 
   assert.equal(event.kind, "new_token");
@@ -18,6 +20,20 @@ test("normalizes token creation payload", () => {
   assert.equal(event.symbol, "EX");
   assert.equal(event.marketCapSol, 31.25);
   assert.equal(event.virtualSolReserves, 12);
+  assert.equal(event.pool, "pump");
+  assert.equal(event.chain, "solana");
+});
+
+test("normalizes alternate venue fields", () => {
+  const event = normalizeMarketEvent({
+    txType: "create",
+    mint: "MintVenue",
+    launchpad: "bonk",
+    network: "solana",
+  });
+
+  assert.equal(event.platform, "bonk");
+  assert.equal(event.chain, "solana");
 });
 
 test("normalizes migration payload", () => {
