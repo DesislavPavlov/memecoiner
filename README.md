@@ -1,39 +1,61 @@
 # memecoiner
 
-Experimental Solana memecoin market observer and paper-trading lab.
+Zero-cost Solana memecoin observer and paper-strategy comparison lab.
 
-## Stage 1 — read-only observer
+## Current milestone
 
-The first milestone is intentionally non-custodial and non-trading:
+The app now combines:
 
-- connect to one PumpPortal WebSocket
-- subscribe to new-token events
-- subscribe to migration events
-- preserve raw events as JSONL
-- normalize the stable fields we can identify
-- maintain an in-memory token state
-- print human-readable observer events
+- PumpPortal's free new-token and migration discovery events
+- free Solana `accountSubscribe` updates for Pump bonding curves
+- inferred buy/sell flow from reserve changes
+- rolling 10s / 30s / 60s metrics
+- Hybrid V1 candidate scoring
+- Pure Migration-Dip strategy state
+- two isolated virtual 10 SOL paper accounts
+- a local dashboard at `http://127.0.0.1:3210`
+- raw JSONL event logging
 
-No private keys, wallet signing, buying, or selling are implemented in Stage 1.
+There are **no real wallets, signatures, orders, or real-money execution paths**.
 
-## Setup
+## Windows: easiest start
+
+Double-click:
+
+`START_MEMECOINER.bat`
+
+On first run it installs dependencies if needed and opens the dashboard automatically.
+
+## Manual start
 
 1. Install Node.js 20+.
 2. Copy `.env.example` to `.env`.
-3. Add a PumpPortal API key.
+3. Add the PumpPortal API key you already generated.
 4. Run:
 
 ```bash
 npm install
-npm run observer
+npm run app
 ```
 
-Raw events are written to `data/events.jsonl` by default.
+Dashboard:
+
+`http://127.0.0.1:3210`
+
+Raw events:
+
+`data/events.jsonl`
+
+## Important current limitation
+
+Pre-migration Pump trades are derived from free Solana bonding-curve account updates.
+
+After a token migrates, the bonding curve stops being the live market. The two paper strategies therefore currently show **WAIT POST-MIGRATION FEED** instead of inventing fills. The next engineering milestone is a free PumpSwap post-migration data path.
 
 ## Principles
 
-- One WebSocket connection; subscriptions share it.
-- Raw source data is retained before interpretation.
-- Unknown/malformed payloads are logged rather than guessed.
-- Trading logic will be added only after live-data validation.
-- Secrets belong in `.env` and are never committed.
+- zero paid market-data feeds for the experiment
+- paper trading only
+- raw source data retained before interpretation
+- deterministic strategy reasoning
+- no private keys anywhere in the project
