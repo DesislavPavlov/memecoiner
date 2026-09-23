@@ -67,6 +67,6 @@ test("migration strategy refuses to invent a post-migration fill", () => {
 
   const row = engine.snapshot().rows[0]!;
   assert.equal(row.migrated, true);
-  assert.equal(row.migration.status, "WAIT POST-MIGRATION FEED");
+  assert.equal(row.migration.status, "WAIT PUMPSWAP DATA");
   assert.equal(engine.snapshot().bots[1]!.balanceSol, 10);
 });
