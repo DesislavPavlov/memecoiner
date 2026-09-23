@@ -18,6 +18,7 @@ interface TokenLiveState {
   name?: string;
   marketCapSol?: number;
   bondingCurveKey?: string;
+  postMigrationLive?: boolean;
   trades: TradeSample[];
 }
 
@@ -42,6 +43,7 @@ export interface TokenDashboardRow {
   name?: string;
   ageSeconds: number;
   migrated: boolean;
+  postMigrationLive: boolean;
   marketCapSol?: number;
   lastPriceRatio?: number;
   w10: WindowMetrics;
@@ -130,6 +132,9 @@ export class LiveMetricsEngine {
     }
 
     if (event.kind === "trade" && event.txType?.startsWith("inferred_")) {
+      if (event.txType.startsWith("inferred_swap_")) {
+        token.postMigrationLive = true;
+      }
       const side = event.txType.endsWith("buy") ? "buy" : "sell";
       const lamports = finiteNumber(event.raw.solDeltaLamports);
       const sol = lamports !== undefined ? lamports / 1_000_000_000 : 0;
@@ -229,6 +234,7 @@ export class LiveMetricsEngine {
       name: token.name,
       ageSeconds,
       migrated: token.migratedAt !== undefined,
+      postMigrationLive: token.postMigrationLive === true,
       marketCapSol: token.marketCapSol,
       lastPriceRatio,
       w10,
@@ -237,11 +243,15 @@ export class LiveMetricsEngine {
       hybrid: this.assessHybrid(
         ageSeconds,
         token.migratedAt !== undefined,
+        token.postMigrationLive === true,
         w10,
         w30,
         w60,
       ),
-      migration: this.assessMigration(token.migratedAt !== undefined),
+      migration: this.assessMigration(
+        token.migratedAt !== undefined,
+        token.postMigrationLive === true,
+      ),
     };
   }
 
@@ -293,17 +303,17 @@ export class LiveMetricsEngine {
   private assessHybrid(
     ageSeconds: number,
     migrated: boolean,
+    postMigrationLive: boolean,
     w10: WindowMetrics,
     w30: WindowMetrics,
     w60: WindowMetrics,
   ): StrategyAssessment {
     if (migrated) {
       return {
-        status: "WAIT POST-MIGRATION FEED",
-        reasons: [
-          "Migration detected",
-          "No fake fill: PumpSwap price feed is not wired yet",
-        ],
+        status: postMigrationLive ? "PUMPSWAP LIVE" : "WAIT PUMPSWAP DATA",
+        reasons: postMigrationLive
+          ? ["Migration detected", "Free PumpSwap vault stream is live"]
+          : ["Migration detected", "Waiting for canonical PumpSwap pool discovery"],
       };
     }
 
@@ -368,14 +378,16 @@ export class LiveMetricsEngine {
     };
   }
 
-  private assessMigration(migrated: boolean): StrategyAssessment {
+  private assessMigration(
+    migrated: boolean,
+    postMigrationLive: boolean,
+  ): StrategyAssessment {
     return migrated
       ? {
-          status: "WAIT POST-MIGRATION FEED",
-          reasons: [
-            "Migration detected",
-            "Need free PumpSwap price stream before paper entry can be simulated",
-          ],
+          status: postMigrationLive ? "PUMPSWAP LIVE" : "WAIT PUMPSWAP DATA",
+          reasons: postMigrationLive
+            ? ["Migration detected", "Free post-migration flow is active"]
+            : ["Migration detected", "Waiting for canonical PumpSwap pool discovery"],
         }
       : {
           status: "WAIT MIGRATION",
