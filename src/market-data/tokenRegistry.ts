@@ -20,6 +20,10 @@ export class TokenRegistry {
           : existing?.migratedAt,
       name: event.name ?? existing?.name,
       symbol: event.symbol ?? existing?.symbol,
+      chain: event.chain ?? existing?.chain,
+      pool: event.pool ?? existing?.pool,
+      platform: event.platform ?? existing?.platform,
+      source: event.source ?? existing?.source,
       marketCapSol: event.marketCapSol ?? existing?.marketCapSol,
       virtualSolReserves:
         event.virtualSolReserves ?? existing?.virtualSolReserves,
