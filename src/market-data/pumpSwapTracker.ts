@@ -42,10 +42,15 @@ export class PumpSwapTracker {
         return false;
       }
 
-      const [base, quote] = await this.rpc.getTokenAccountAmounts([
+      const amounts = await this.rpc.getTokenAccountAmounts([
         pool.baseVault,
         pool.quoteVault,
       ]);
+      const base = amounts[0];
+      const quote = amounts[1];
+      if (base === undefined || quote === undefined) {
+        throw new Error("PumpSwap vault baseline is incomplete");
+      }
 
       const timer = setTimeout(
         () => this.unwatch(mint),
