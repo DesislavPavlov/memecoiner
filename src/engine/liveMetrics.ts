@@ -160,7 +160,16 @@ export class LiveMetricsEngine {
     this.pruneTokens();
   }
 
-  snapshot(limit = 80): DashboardSnapshot {
+  rowForMint(mint: string): TokenDashboardRow | undefined {
+    const token = this.tokens.get(mint);
+    return token ? this.toRow(token, Date.now()) : undefined;
+  }
+
+  snapshot(
+    limit = 80,
+    bots?: PaperBotSummary[],
+    extraEvents: string[] = [],
+  ): DashboardSnapshot {
     const now = Date.now();
     const rows = [...this.tokens.values()]
       .map((token) => this.toRow(token, now))
@@ -175,31 +184,33 @@ export class LiveMetricsEngine {
       generatedAt: new Date(now).toISOString(),
       trackedTokens: this.tokens.size,
       rows,
-      bots: [
-        {
-          id: "hybrid",
-          name: "Hybrid Runner + Migration",
-          startingBalanceSol: this.startingBalanceSol,
-          balanceSol: this.startingBalanceSol,
-          realizedPnlSol: 0,
-          openPositions: 0,
-          closedTrades: 0,
-          mode: "paper",
-          status: "SCORING / WATCHING",
-        },
-        {
-          id: "migration",
-          name: "Pure Migration Dip",
-          startingBalanceSol: this.startingBalanceSol,
-          balanceSol: this.startingBalanceSol,
-          realizedPnlSol: 0,
-          openPositions: 0,
-          closedTrades: 0,
-          mode: "paper",
-          status: "WAITING FOR MIGRATIONS",
-        },
-      ],
-      recentEvents: [...this.recentEvents],
+      bots:
+        bots ??
+        [
+          {
+            id: "hybrid",
+            name: "Hybrid Runner + Migration",
+            startingBalanceSol: this.startingBalanceSol,
+            balanceSol: this.startingBalanceSol,
+            realizedPnlSol: 0,
+            openPositions: 0,
+            closedTrades: 0,
+            mode: "paper",
+            status: "SCORING / WATCHING",
+          },
+          {
+            id: "migration",
+            name: "Pure Migration Dip",
+            startingBalanceSol: this.startingBalanceSol,
+            balanceSol: this.startingBalanceSol,
+            realizedPnlSol: 0,
+            openPositions: 0,
+            closedTrades: 0,
+            mode: "paper",
+            status: "WAITING FOR MIGRATIONS",
+          },
+        ],
+      recentEvents: [...extraEvents, ...this.recentEvents].slice(0, 60),
     };
   }
 
