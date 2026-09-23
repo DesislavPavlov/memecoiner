@@ -51,6 +51,17 @@ function isSolanaPump(event: NormalizedMarketEvent): boolean {
 
 async function handleEvent(event: NormalizedMarketEvent): Promise<void> {
   await store.append(event);
+
+  if (
+    (event.kind === "new_token" || event.kind === "migration") &&
+    (
+      (event.chain && !event.chain.toLowerCase().includes("solana")) ||
+      !isSolanaAddress(event.mint)
+    )
+  ) {
+    return;
+  }
+
   const before = event.mint ? metrics.rowForMint(event.mint) : undefined;
   metrics.ingest(event);
   const after = event.mint ? metrics.rowForMint(event.mint) : undefined;
