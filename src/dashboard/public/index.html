@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Memecoiner Paper Lab</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0a0c10;--card:#11151c;--card2:#171c25;--border:#252d39;--text:#eef2f7;--muted:#8b98aa;--good:#68d391;--warn:#f6c85f;--bad:#fc8181;--accent:#7aa2f7}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}
+    .wrap{max-width:1500px;margin:auto;padding:22px}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.title{font-size:24px;font-weight:800}.sub{color:var(--muted);margin-top:3px}.pill{border:1px solid var(--border);background:var(--card);padding:7px 10px;border-radius:999px;color:var(--muted)}
+    .bots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:14px}.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:15px}.botline{display:flex;justify-content:space-between;gap:12px}.botname{font-weight:750}.balance{font-size:23px;font-weight:800;margin:9px 0 3px}.muted{color:var(--muted)}.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+    .grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:12px}.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}.panelhead{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;justify-content:space-between}.paneltitle{font-weight:750}.controls{display:flex;gap:8px}.controls input{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 9px;outline:none}
+    .tablewrap{overflow:auto;max-height:670px}table{width:100%;border-collapse:collapse;min-width:1050px}th,td{padding:9px 10px;border-bottom:1px solid #1d2430;text-align:right;white-space:nowrap}th{position:sticky;top:0;background:#121720;color:var(--muted);font-size:12px;z-index:1}th:first-child,td:first-child{text-align:left}.sym{font-weight:750}.mint{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);font-size:11px}.score{font-weight:800}.status{font-size:11px;font-weight:750;padding:4px 7px;border-radius:6px;background:var(--card2);display:inline-block}.events{padding:9px 12px;max-height:670px;overflow:auto}.event{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:7px 0;border-bottom:1px solid #1d2430;font-size:12px;color:#b7c0cc}.empty{padding:25px;color:var(--muted);text-align:center}
+    .reason{display:none;position:absolute;z-index:5;background:#0d1118;border:1px solid var(--border);border-radius:9px;padding:9px;width:270px;white-space:normal;text-align:left;box-shadow:0 8px 28px #0008}.hasreason{position:relative;cursor:help}.hasreason:hover .reason{display:block}
+    @media(max-width:900px){.bots,.grid{grid-template-columns:1fr}.top{flex-direction:column}.tablewrap{max-height:520px}.events{max-height:300px}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><div class="title">Memecoiner · Paper Lab</div><div class="sub">Free live Solana data · no real wallets · no real orders</div></div>
+    <div class="pill" id="health">Connecting…</div>
+  </div>
+  <div class="bots" id="bots"></div>
+  <div class="grid">
+    <section class="panel">
+      <div class="panelhead"><div><div class="paneltitle">Live candidates</div><div class="muted" id="count">0 tracked</div></div><div class="controls"><input id="search" placeholder="Filter symbol / mint"></div></div>
+      <div class="tablewrap"><table><thead><tr>
+        <th>Token</th><th>Age</th><th>State</th><th>10s B/S</th><th>60s Buy</th><th>60s Sell</th><th>60s Ratio</th><th>Δ30s</th><th>Hybrid</th><th>Migration</th>
+      </tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty">Waiting for live activity…</div></div>
+    </section>
+    <aside class="panel"><div class="panelhead"><div class="paneltitle">Recent feed</div></div><div class="events" id="events"></div></aside>
+  </div>
+</div>
+<script>
+  const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const age=s=>s<60?s+"s":Math.floor(s/60)+"m "+(s%60)+"s";
+  const ratio=x=>x===null?"—":!Number.isFinite(x)?"∞":x.toFixed(2);
+  const pct=x=>x===null?"—":(x>=0?"+":"")+x.toFixed(1)+"%";
+  const sol=x=>(x??0).toFixed(3);
+  const statusClass=s=>s.includes("PRIME")?"good":s==="WATCH"?"warn":s==="IGNORE"?"muted":s.includes("POST")?"warn":"muted";
+  let snapshot=null;
+  function render(){
+    if(!snapshot)return;
+    document.getElementById("health").textContent="LIVE · "+new Date(snapshot.generatedAt).toLocaleTimeString();
+    document.getElementById("count").textContent=snapshot.trackedTokens+" tracked";
+    document.getElementById("bots").innerHTML=snapshot.bots.map(b=>`
+      <div class="card"><div class="botline"><div class="botname">${esc(b.name)}</div><span class="status">${esc(b.mode.toUpperCase())}</span></div>
+      <div class="balance">${b.balanceSol.toFixed(2)} SOL</div><div class="muted">P&L ${b.realizedPnlSol.toFixed(3)} SOL · ${b.closedTrades} trades · ${esc(b.status)}</div></div>`).join("");
+    const q=document.getElementById("search").value.trim().toLowerCase();
+    const rows=snapshot.rows.filter(r=>!q||String(r.symbol??"").toLowerCase().includes(q)||r.mint.toLowerCase().includes(q));
+    document.getElementById("empty").style.display=rows.length?"none":"block";
+    document.getElementById("rows").innerHTML=rows.map(r=>`
+      <tr><td><div class="sym">${esc(r.symbol??"UNKNOWN")}</div><div class="mint">${esc(r.mint.slice(0,8))}…${esc(r.mint.slice(-5))}</div></td>
+      <td>${age(r.ageSeconds)}</td><td class="${r.migrated?"warn":"muted"}">${r.migrated?"MIGRATED":"CURVE"}</td>
+      <td>${r.w10.buys}/${r.w10.sells}</td><td class="good">${sol(r.w60.buySol)}</td><td class="bad">${sol(r.w60.sellSol)}</td>
+      <td>${ratio(r.w60.buySellVolumeRatio)}</td><td class="${(r.w30.priceChangePct??0)>=0?"good":"bad"}">${pct(r.w30.priceChangePct)}</td>
+      <td class="hasreason"><span class="score ${statusClass(r.hybrid.status)}">${r.hybrid.score??"—"}</span> <span class="status">${esc(r.hybrid.status)}</span><div class="reason">${r.hybrid.reasons.map(esc).join("<br>")}</div></td>
+      <td class="hasreason"><span class="status">${esc(r.migration.status)}</span><div class="reason">${r.migration.reasons.map(esc).join("<br>")}</div></td></tr>`).join("");
+    document.getElementById("events").innerHTML=snapshot.recentEvents.length?snapshot.recentEvents.map(e=>`<div class="event">${esc(e)}</div>`).join(""):'<div class="empty">No events yet</div>';
+  }
+  async function tick(){
+    try{const r=await fetch("/api/state",{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);snapshot=await r.json();render()}
+    catch(e){document.getElementById("health").textContent="DISCONNECTED";}
+  }
+  document.getElementById("search").addEventListener("input",render);
+  tick();setInterval(tick,1000);
+</script>
+</body>
+</html>
