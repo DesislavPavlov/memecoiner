@@ -10,6 +10,16 @@ function readInt(name: string, fallback: number): number {
   return parsed;
 }
 
+function readNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid number for ${name}: ${raw}`);
+  }
+  return parsed;
+}
+
 const apiKey = process.env.PUMPPORTAL_API_KEY?.trim();
 
 export const config = {
@@ -20,6 +30,8 @@ export const config = {
     process.env.SOLANA_WS_URL?.trim() || "wss://api.mainnet.solana.com/",
   curveWatchTtlMs: readInt("CURVE_WATCH_TTL_MS", 180_000),
   maxCurveSubscriptions: readInt("MAX_CURVE_SUBSCRIPTIONS", 100),
+  dashboardPort: readInt("DASHBOARD_PORT", 3210),
+  paperStartingBalanceSol: readNumber("PAPER_STARTING_BALANCE_SOL", 10),
   eventLogPath: process.env.EVENT_LOG_PATH?.trim() || "data/events.jsonl",
   logLevel: process.env.LOG_LEVEL?.trim() || "info",
   reconnectMinMs: readInt("RECONNECT_MIN_MS", 1_000),
