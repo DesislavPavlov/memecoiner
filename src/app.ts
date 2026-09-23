@@ -6,7 +6,9 @@ import { logger } from "./logging/logger.js";
 import { formatObserverEvent } from "./market-data/format.js";
 import { PumpCurveTracker } from "./market-data/pumpCurveTracker.js";
 import { PumpPortalClient } from "./market-data/pumpPortalClient.js";
+import { PumpSwapTracker } from "./market-data/pumpSwapTracker.js";
 import { SolanaAccountClient } from "./market-data/solanaAccountClient.js";
+import { SolanaRpcClient } from "./market-data/solanaRpcClient.js";
 import { TokenRegistry } from "./market-data/tokenRegistry.js";
 import type { NormalizedMarketEvent } from "./types/market.js";
 
@@ -16,9 +18,11 @@ const store = new JsonlEventStore(config.eventLogPath);
 const registry = new TokenRegistry();
 const metrics = new LiveMetricsEngine(config.paperStartingBalanceSol);
 const solana = new SolanaAccountClient();
+const rpc = new SolanaRpcClient();
 const dashboard = new DashboardServer(metrics, config.dashboardPort);
 
 let curveTracker: PumpCurveTracker;
+let pumpSwapTracker: PumpSwapTracker;
 
 function isSolanaAddress(value: string | undefined): boolean {
   return Boolean(value && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value));
@@ -64,8 +68,11 @@ async function handleEvent(event: NormalizedMarketEvent): Promise<void> {
     curveTracker.watch(event.mint, event.bondingCurveKey);
   }
 
-  if (event.kind === "migration" && state?.bondingCurveKey) {
-    curveTracker.unwatch(state.bondingCurveKey);
+  if (event.kind === "migration" && event.mint && isSolanaAddress(event.mint)) {
+    if (state?.bondingCurveKey) {
+      curveTracker.unwatch(state.bondingCurveKey);
+    }
+    void pumpSwapTracker.watchMint(event.mint);
   }
 
   if (event.kind === "trade" && event.txType?.startsWith("inferred_")) {
@@ -89,6 +96,7 @@ async function handleEvent(event: NormalizedMarketEvent): Promise<void> {
 }
 
 curveTracker = new PumpCurveTracker(solana, handleEvent);
+pumpSwapTracker = new PumpSwapTracker(solana, rpc, handleEvent);
 const pumpPortal = new PumpPortalClient(handleEvent);
 
 function shutdown(signal: string): void {
@@ -110,6 +118,8 @@ logger.info(
     dashboard: `http://127.0.0.1:${config.dashboardPort}`,
     mode: "paper-only",
     paidTradeFeeds: false,
+    preMigration: "free bonding-curve accountSubscribe",
+    postMigration: "free PumpSwap vault accountSubscribe",
   },
   "Memecoiner Paper Lab started",
 );
