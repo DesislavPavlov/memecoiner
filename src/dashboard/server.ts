@@ -1,12 +1,14 @@
 import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import type { LiveMetricsEngine } from "../engine/liveMetrics.js";
+import type { DashboardSnapshot } from "../engine/liveMetrics.js";
 import { logger } from "../logging/logger.js";
+
+type StateProvider = () => DashboardSnapshot;
 
 export class DashboardServer {
   constructor(
-    private readonly metrics: LiveMetricsEngine,
+    private readonly getState: StateProvider,
     private readonly port: number,
   ) {}
 
@@ -17,7 +19,7 @@ export class DashboardServer {
       const url = new URL(req.url ?? "/", `http://localhost:${this.port}`);
 
       if (url.pathname === "/api/state") {
-        const body = JSON.stringify(this.metrics.snapshot());
+        const body = JSON.stringify(this.getState());
         res.writeHead(200, {
           "content-type": "application/json; charset=utf-8",
           "cache-control": "no-store",
