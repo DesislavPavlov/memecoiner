@@ -28,8 +28,12 @@ export const config = {
     process.env.PUMPPORTAL_WS_URL?.trim() || "wss://pumpportal.fun/api/data",
   solanaWsUrl:
     process.env.SOLANA_WS_URL?.trim() || "wss://api.mainnet.solana.com/",
+  solanaRpcUrl:
+    process.env.SOLANA_RPC_URL?.trim() || "https://api.mainnet-beta.solana.com",
   curveWatchTtlMs: readInt("CURVE_WATCH_TTL_MS", 180_000),
   maxCurveSubscriptions: readInt("MAX_CURVE_SUBSCRIPTIONS", 100),
+  pumpSwapWatchTtlMs: readInt("PUMPSWAP_WATCH_TTL_MS", 300_000),
+  maxPumpSwapSubscriptions: readInt("MAX_PUMPSWAP_SUBSCRIPTIONS", 40),
   dashboardPort: readInt("DASHBOARD_PORT", 3210),
   paperStartingBalanceSol: readNumber("PAPER_STARTING_BALANCE_SOL", 10),
   eventLogPath: process.env.EVENT_LOG_PATH?.trim() || "data/events.jsonl",
