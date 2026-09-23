@@ -19,14 +19,12 @@ if not exist ".env" (
   exit /b 1
 )
 
-if not exist "node_modules" (
-  echo Installing dependencies for first run...
-  call npm install
-  if errorlevel 1 (
-    echo npm install failed.
-    pause
-    exit /b 1
-  )
+echo Checking dependencies...
+call npm install --silent
+if errorlevel 1 (
+  echo npm install failed.
+  pause
+  exit /b 1
 )
 
 start "" cmd /c "timeout /t 2 /nobreak >nul && start http://127.0.0.1:3210"
