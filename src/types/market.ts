@@ -16,6 +16,10 @@ export interface NormalizedMarketEvent {
   symbol?: string;
   traderPublicKey?: string;
   txType?: string;
+  chain?: string;
+  pool?: string;
+  platform?: string;
+  source?: string;
   marketCapSol?: number;
   virtualSolReserves?: number;
   virtualTokenReserves?: number;
@@ -30,6 +34,10 @@ export interface TokenState {
   migratedAt?: string;
   name?: string;
   symbol?: string;
+  chain?: string;
+  pool?: string;
+  platform?: string;
+  source?: string;
   marketCapSol?: number;
   virtualSolReserves?: number;
   virtualTokenReserves?: number;
