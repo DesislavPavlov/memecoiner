@@ -16,6 +16,10 @@ export const config = {
   pumpPortalApiKey: apiKey ?? "",
   pumpPortalWsUrl:
     process.env.PUMPPORTAL_WS_URL?.trim() || "wss://pumpportal.fun/api/data",
+  solanaWsUrl:
+    process.env.SOLANA_WS_URL?.trim() || "wss://api.mainnet.solana.com/",
+  curveWatchTtlMs: readInt("CURVE_WATCH_TTL_MS", 180_000),
+  maxCurveSubscriptions: readInt("MAX_CURVE_SUBSCRIPTIONS", 100),
   eventLogPath: process.env.EVENT_LOG_PATH?.trim() || "data/events.jsonl",
   logLevel: process.env.LOG_LEVEL?.trim() || "info",
   reconnectMinMs: readInt("RECONNECT_MIN_MS", 1_000),
