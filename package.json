@@ -6,7 +6,9 @@
   "description": "Read-only live Solana memecoin observer and strategy experiment lab",
   "scripts": {
     "observer": "tsx src/index.ts",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
     "build": "tsc"
   },
   "dependencies": {
