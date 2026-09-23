@@ -6,7 +6,7 @@ export class JsonlEventStore {
   private ready: Promise<void>;
 
   constructor(private readonly path: string) {
-    this.ready = mkdir(dirname(path), { recursive: true });
+    this.ready = mkdir(dirname(path), { recursive: true }).then(() => undefined);
   }
 
   async append(event: NormalizedMarketEvent): Promise<void> {
