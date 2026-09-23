@@ -56,6 +56,21 @@ export function normalizeMarketEvent(input: unknown): NormalizedMarketEvent {
       asString(raw.trader) ??
       asString(raw.user),
     txType: asString(raw.txType),
+    chain:
+      asString(raw.chain) ??
+      asString(raw.blockchain) ??
+      asString(raw.network),
+    pool:
+      asString(raw.pool) ??
+      asString(raw.poolType) ??
+      asString(raw.exchange),
+    platform:
+      asString(raw.platform) ??
+      asString(raw.launchpad) ??
+      asString(raw.createdOn),
+    source:
+      asString(raw.source) ??
+      asString(raw.program),
     marketCapSol:
       asNumber(raw.marketCapSol) ??
       asNumber(raw.marketCap) ??
