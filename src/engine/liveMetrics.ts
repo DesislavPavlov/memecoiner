@@ -223,7 +223,13 @@ export class LiveMetricsEngine {
       w10,
       w30,
       w60,
-      hybrid: this.assessHybrid(ageSeconds, token.migratedAt !== undefined, w30, w60),
+      hybrid: this.assessHybrid(
+        ageSeconds,
+        token.migratedAt !== undefined,
+        w10,
+        w30,
+        w60,
+      ),
       migration: this.assessMigration(token.migratedAt !== undefined),
     };
   }
@@ -265,8 +271,10 @@ export class LiveMetricsEngine {
       sells,
       buySol,
       sellSol,
+      // Keep API output JSON-safe. 99 means "buys present, zero sell volume"
+      // and is effectively infinite for our scoring thresholds.
       buySellVolumeRatio:
-        sellSol > 0 ? buySol / sellSol : buySol > 0 ? Number.POSITIVE_INFINITY : null,
+        sellSol > 0 ? buySol / sellSol : buySol > 0 ? 99 : null,
       priceChangePct,
     };
   }
@@ -274,6 +282,7 @@ export class LiveMetricsEngine {
   private assessHybrid(
     ageSeconds: number,
     migrated: boolean,
+    w10: WindowMetrics,
     w30: WindowMetrics,
     w60: WindowMetrics,
   ): StrategyAssessment {
@@ -298,7 +307,7 @@ export class LiveMetricsEngine {
     }
 
     const ratio = w60.buySellVolumeRatio;
-    if (ratio === Number.POSITIVE_INFINITY || (ratio !== null && ratio >= 1.5)) {
+    if (ratio !== null && ratio >= 1.5) {
       score += 20;
       reasons.push("Strong buy/sell volume");
     } else if (ratio !== null && ratio >= 1.1) {
@@ -336,7 +345,7 @@ export class LiveMetricsEngine {
       reasons.push("30s momentum not positive");
     }
 
-    if (w10Pressure(w30)) {
+    if (hasConstructiveRecentFlow(w10)) {
       score += 10;
       reasons.push("Recent flow still constructive");
     }
@@ -381,9 +390,10 @@ function shortMint(mint: string): string {
   return mint.length > 12 ? `${mint.slice(0, 5)}…${mint.slice(-4)}` : mint;
 }
 
-function w10Pressure(w30: WindowMetrics): boolean {
+function hasConstructiveRecentFlow(w10: WindowMetrics): boolean {
   return (
-    w30.buySellVolumeRatio === Number.POSITIVE_INFINITY ||
-    (w30.buySellVolumeRatio !== null && w30.buySellVolumeRatio >= 1.2)
+    w10.buySellVolumeRatio !== null &&
+    w10.buySellVolumeRatio >= 1.2 &&
+    w10.buys > 0
   );
 }
