@@ -1,8 +1,10 @@
 import { assertObserverConfig, config } from "./config.js";
 import { DashboardServer } from "./dashboard/server.js";
 import { LiveMetricsEngine } from "./engine/liveMetrics.js";
+import { PaperTradingEngine } from "./engine/paperTrading.js";
 import { JsonlEventStore } from "./logging/eventStore.js";
 import { logger } from "./logging/logger.js";
+import { PaperJournal } from "./logging/paperJournal.js";
 import { formatObserverEvent } from "./market-data/format.js";
 import { PumpCurveTracker } from "./market-data/pumpCurveTracker.js";
 import { PumpPortalClient } from "./market-data/pumpPortalClient.js";
@@ -17,9 +19,14 @@ assertObserverConfig();
 const store = new JsonlEventStore(config.eventLogPath);
 const registry = new TokenRegistry();
 const metrics = new LiveMetricsEngine(config.paperStartingBalanceSol);
+const journal = new PaperJournal(config.paperJournalPath);
+const paper = new PaperTradingEngine(config.paperStartingBalanceSol, journal);
 const solana = new SolanaAccountClient();
 const rpc = new SolanaRpcClient();
-const dashboard = new DashboardServer(metrics, config.dashboardPort);
+const dashboard = new DashboardServer(
+  () => metrics.snapshot(80, paper.summaries(), paper.recentEvents()),
+  config.dashboardPort,
+);
 
 let curveTracker: PumpCurveTracker;
 let pumpSwapTracker: PumpSwapTracker;
@@ -44,7 +51,10 @@ function isSolanaPump(event: NormalizedMarketEvent): boolean {
 
 async function handleEvent(event: NormalizedMarketEvent): Promise<void> {
   await store.append(event);
+  const before = event.mint ? metrics.rowForMint(event.mint) : undefined;
   metrics.ingest(event);
+  const after = event.mint ? metrics.rowForMint(event.mint) : undefined;
+  await paper.ingest(event, before, after);
   const state = registry.apply(event);
 
   if (event.kind === "new_token" || event.kind === "migration") {
@@ -120,6 +130,7 @@ logger.info(
     paidTradeFeeds: false,
     preMigration: "free bonding-curve accountSubscribe",
     postMigration: "free PumpSwap vault accountSubscribe",
+    paperJournal: config.paperJournalPath,
   },
   "Memecoiner Paper Lab started",
 );
