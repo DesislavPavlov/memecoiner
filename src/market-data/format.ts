@@ -20,10 +20,17 @@ export function formatObserverEvent(
         ? "MIGRATION"
         : event.kind.toUpperCase();
 
+  const venue =
+    state?.chain ??
+    state?.platform ??
+    state?.pool ??
+    state?.source;
+
   const parts = [
     `[${title}]`,
     state?.symbol ? `${state.symbol}` : undefined,
     shortMint(event.mint),
+    venue ? `venue=${venue}` : undefined,
     state?.marketCapSol !== undefined
       ? `MC ${state.marketCapSol.toFixed(2)} SOL`
       : undefined,
