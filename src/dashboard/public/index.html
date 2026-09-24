@@ -26,7 +26,7 @@
     <section class="panel">
       <div class="panelhead"><div><div class="paneltitle">Live candidates</div><div class="muted" id="count">0 tracked</div></div><div class="controls"><input id="search" placeholder="Filter symbol / mint"></div></div>
       <div class="tablewrap"><table><thead><tr>
-        <th>Token</th><th>Age</th><th>State</th><th>10s B/S</th><th>60s Buy</th><th>60s Sell</th><th>60s Ratio</th><th>Δ30s</th><th>Hybrid</th><th>Migration</th>
+        <th>Token</th><th>Age</th><th>State</th><th>10s flow samples B/S</th><th>60s Buy</th><th>60s Sell</th><th>60s Ratio</th><th>Δ30s</th><th>Hybrid</th><th>Migration</th>
       </tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty">Waiting for live activity…</div></div>
     </section>
     <aside class="panel"><div class="panelhead"><div class="paneltitle">Recent feed</div></div><div class="events" id="events"></div></aside>
@@ -46,7 +46,7 @@
     document.getElementById("count").textContent=snapshot.trackedTokens+" tracked";
     document.getElementById("bots").innerHTML=snapshot.bots.map(b=>`
       <div class="card"><div class="botline"><div class="botname">${esc(b.name)}</div><span class="status">${esc(b.mode.toUpperCase())}</span></div>
-      <div class="balance">${b.balanceSol.toFixed(2)} SOL</div><div class="muted">P&L ${b.realizedPnlSol.toFixed(3)} SOL · ${b.closedTrades} trades · ${esc(b.status)}</div></div>`).join("");
+      <div class="balance">${b.balanceSol.toFixed(2)} SOL <small>estimated equity</small></div><div class="muted">Realized P&L ${b.realizedPnlSol.toFixed(3)} SOL · ${b.closedTrades} trades · ${esc(b.status)}</div></div>`).join("");
     const q=document.getElementById("search").value.trim().toLowerCase();
     const rows=snapshot.rows.filter(r=>!q||String(r.symbol??"").toLowerCase().includes(q)||r.mint.toLowerCase().includes(q));
     document.getElementById("empty").style.display=rows.length?"none":"block";

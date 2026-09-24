@@ -1,371 +1,344 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { config } from "../config.js";
-import type {
-  PaperBotSummary,
-  TokenDashboardRow,
-} from "./liveMetrics.js";
+import type { PaperBotSummary, TokenDashboardRow } from "./liveMetrics.js";
 import type { NormalizedMarketEvent } from "../types/market.js";
-import { PaperJournal } from "../logging/paperJournal.js";
-
+import type { PaperJournal, PaperJournalEntry } from "../logging/paperJournal.js";
+import type { HealthSink } from "../logging/health.js";
+import { buyQuote, sellQuote, type PoolQuote } from "./execution.js";
+import { DipSetup } from "./dip.js";
 type BotId = "hybrid" | "migration";
-
 interface Position {
-  mint: string;
-  symbol?: string;
-  entryAt: number;
-  entryPrice: number;
-  lastPrice: number;
-  stakeSol: number;
-  entryFeeSol: number;
-  peakReturnPct: number;
-  entryReasons: string[];
+    id: string;
+    mint: string;
+    symbol?: string;
+    pool: string;
+    entryAt: number;
+    entryPrice: number;
+    tokens: number;
+    stakeSol: number;
+    entryFeeSol: number;
+    lastValue: number;
+    peakReturnPct: number;
+    exitRequested?: {
+        at: number;
+        reason: string;
+    };
+    staleReported?: boolean;
 }
-
-interface BotLedger {
-  id: BotId;
-  name: string;
-  cashSol: number;
-  realizedPnlSol: number;
-  closedTrades: number;
-  open?: Position;
-  tradedMints: Set<string>;
+interface Pending {
+    mint: string;
+    symbol?: string;
+    pool: string;
+    at: number;
+    signalPrice: number;
+    reasons: string[];
 }
-
-interface MigrationTrack {
-  migratedAt: number;
-  preHybridScore: number;
-  high?: number;
-  low?: number;
-  postTrades: number;
+interface Ledger {
+    id: BotId;
+    name: string;
+    cashSol: number;
+    realizedPnlSol: number;
+    closedTrades: number;
+    open?: Position;
+    pending?: Pending;
+    tradedMints: string[];
 }
-
+interface Track {
+    migratedAt: number;
+    score: number;
+    setup: DipSetup;
+    lastDecision?: Record<string, string>;
+}
+interface Options {
+    statePath?: string;
+    runId?: string;
+    health?: HealthSink;
+    clock?: () => number;
+}
+const ids: BotId[] = ["hybrid", "migration"];
 export class PaperTradingEngine {
-  private readonly ledgers: Record<BotId, BotLedger>;
-  private readonly migrations = new Map<string, MigrationTrack>();
-  private readonly recent: string[] = [];
-
-  constructor(
-    startingBalanceSol: number,
-    private readonly journal: PaperJournal,
-  ) {
-    this.ledgers = {
-      hybrid: {
-        id: "hybrid",
-        name: "Hybrid Runner + Migration",
-        cashSol: startingBalanceSol,
-        realizedPnlSol: 0,
-        closedTrades: 0,
-        tradedMints: new Set(),
-      },
-      migration: {
-        id: "migration",
-        name: "Pure Migration Dip",
-        cashSol: startingBalanceSol,
-        realizedPnlSol: 0,
-        closedTrades: 0,
-        tradedMints: new Set(),
-      },
-    };
-  }
-
-  async ingest(
-    event: NormalizedMarketEvent,
-    before: TokenDashboardRow | undefined,
-    after: TokenDashboardRow | undefined,
-  ): Promise<void> {
-    if (!event.mint) return;
-    const now = Date.parse(event.receivedAt) || Date.now();
-
-    if (event.kind === "migration") {
-      this.migrations.set(event.mint, {
-        migratedAt: now,
-        preHybridScore: before?.hybrid.score ?? 0,
-        postTrades: 0,
-      });
-      this.push(
-        `MIGRATION SETUP ${after?.symbol ?? shortMint(event.mint)} · hybrid pre-score ${before?.hybrid.score ?? 0}`,
-      );
-      return;
+    private ledgers: Record<BotId, Ledger>;
+    private readonly tracks = new Map<string, Track>();
+    private readonly quotes = new Map<string, PoolQuote>();
+    private readonly rows = new Map<string, {
+        row: TokenDashboardRow;
+        at: number;
+    }>();
+    private readonly recent: string[] = [];
+    private readonly clock: () => number;
+    private readonly health: HealthSink;
+    private outbox: PaperJournalEntry[] = [];
+    private startingBalance: number;
+    private lastCheckpoint = 0;
+    constructor(startingBalanceSol: number, private readonly journal: PaperJournal, private readonly options: Options = {}) {
+        this.startingBalance = startingBalanceSol;
+        this.clock = options.clock ?? Date.now;
+        this.health = options.health ?? (() => { });
+        this.ledgers = Object.fromEntries(ids.map(id => [id, {
+                id, name: id === "hybrid" ? "Hybrid V2" : "Migration Scalp V2",
+                cashSol: startingBalanceSol, realizedPnlSol: 0, closedTrades: 0, tradedMints: [],
+            }])) as unknown as Record<BotId, Ledger>;
     }
-
-    if (
-      event.kind !== "trade" ||
-      !event.txType?.startsWith("inferred_swap_") ||
-      !after?.lastPriceRatio ||
-      after.lastPriceRatio <= 0
-    ) {
-      return;
+    async restore(): Promise<void> {
+        if (!this.options.statePath)
+            return;
+        let text: string;
+        try {
+            text = await readFile(this.options.statePath, "utf8");
+        }
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT")
+                return;
+            throw error;
+        }
+        const state = JSON.parse(text);
+        if (state.schema !== 3 || !Number.isFinite(state.startingBalance) || !Array.isArray(state.outbox))
+            throw new Error("Invalid paper checkpoint");
+        for (const id of ids) {
+            const b = state.ledgers?.[id];
+            if (!b || b.id !== id || !Number.isFinite(b.cashSol) || b.cashSol < 0 ||
+                !Number.isFinite(b.realizedPnlSol) || !Number.isInteger(b.closedTrades) || !Array.isArray(b.tradedMints))
+                throw new Error("Invalid paper ledger");
+            if (b.open && (![b.open.tokens, b.open.stakeSol, b.open.entryPrice, b.open.entryAt].every(v => Number.isFinite(v) && v > 0) || !b.open.pool || !b.open.id))
+                throw new Error("Invalid open position");
+            delete b.pending; // Never execute pre-restart signals.
+        }
+        this.ledgers = state.ledgers;
+        this.startingBalance = state.startingBalance;
+        this.outbox = state.outbox;
+        await this.flushOutbox();
+        this.health("paper_restored", { positions: this.openMints() });
     }
-
-    const track = this.migrations.get(event.mint);
-    if (!track) return;
-
-    const price = after.lastPriceRatio;
-    track.postTrades += 1;
-    track.high = track.high === undefined ? price : Math.max(track.high, price);
-    track.low = track.low === undefined ? price : Math.min(track.low, price);
-
-    await this.manageOpenPosition("hybrid", after, price, now);
-    await this.manageOpenPosition("migration", after, price, now);
-
-    if (!this.ledgers.hybrid.open) {
-      await this.maybeEnterHybrid(after, track, price, now);
+    openMints(): string[] { return [...new Set(ids.flatMap(id => this.ledgers[id].open ? [this.ledgers[id].open!.mint] : []))]; }
+    async ingest(event: NormalizedMarketEvent, before?: TokenDashboardRow, after?: TokenDashboardRow): Promise<void> {
+        if (!event.mint)
+            return;
+        const mint = event.mint, at = Date.parse(event.receivedAt), now = this.clock();
+        if (!Number.isFinite(at) || at > now + 1000)
+            return;
+        if (event.kind === "migration") {
+            if ((event.pool ?? event.raw.pool) !== "pump-amm")
+                return;
+            if (this.tracks.has(mint)) {
+                this.health("duplicate_migration", { mint });
+                return;
+            }
+            this.tracks.set(mint, { migratedAt: at, score: before?.hybrid.score ?? 0,
+                setup: new DipSetup(config.paperMigrationMinDipPct, config.paperMaxDipPct) });
+            return;
+        }
+        if (event.kind !== "trade" && event.kind !== "snapshot")
+            return;
+        const r = event.raw;
+        if (r.source !== "solana_pumpswap_vaults" || r.coherent !== true || typeof r.pool !== "string")
+            return;
+        const base = Number(r.baseReserve), quoteSol = Number(r.quoteReserve) / 1e9, slot = Number(r.slot);
+        if (![base, quoteSol, slot].every(v => Number.isFinite(v) && v > 0)) {
+            this.quotes.delete(mint);
+            this.health("invalid_pool_quote", { mint, slot });
+            await this.tick(now);
+            return;
+        }
+        const prev = this.quotes.get(mint);
+        if (prev && (slot < prev.slot || at < prev.at || r.pool !== prev.pool))
+            return;
+        if (prev && prev.generation !== r.generation) {
+            const track = this.tracks.get(mint);
+            if (track) track.setup = new DipSetup(config.paperMigrationMinDipPct, config.paperMaxDipPct);
+            for (const id of ids) if (this.ledgers[id].pending?.mint === mint) delete this.ledgers[id].pending;
+        }
+        const quote: PoolQuote = { pool: r.pool, base, quoteSol, slot, at, generation: typeof r.generation === "number" ? r.generation : undefined };
+        this.quotes.set(mint, quote);
+        if (after)
+            this.rows.set(mint, { row: after, at });
+        const track = this.tracks.get(mint);
+        if (event.kind === "trade" && track && now - at <= config.paperQuoteMaxAgeMs) {
+            track.setup.update(quoteSol / base, at);
+        }
+        await this.tick(now, event.eventId);
+        if (!track || event.kind !== "trade" || !after)
+            return;
+        for (const id of ids) {
+            const bot = this.ledgers[id];
+            if (bot.open || bot.pending || bot.tradedMints.includes(mint))
+                continue;
+            const reject = this.entryRejection(id, mint, now);
+            if (reject) {
+                this.decision(track, mint, id + ": " + reject);
+                continue;
+            }
+            bot.pending = { mint, symbol: after.symbol, pool: quote.pool, at: now, signalPrice: quoteSol / base,
+                reasons: [id === "hybrid" ? `Pre-migration score ${track.score}` : "Pure migration: no pre-score",
+                    `Ordered dip ${track.setup.dipPct.toFixed(1)}%`, `Recovery ${track.setup.recoveryPct(quoteSol / base).toFixed(1)}%`,
+                    `Post-migration 10s flow ratio ${after.w10.buySellVolumeRatio?.toFixed(2)}`] };
+            this.health("entry_signal", { bot: id, mint, peakAt: track.setup.peakAt, troughAt: track.setup.troughAt, eventId: event.eventId });
+        }
     }
-    if (!this.ledgers.migration.open) {
-      await this.maybeEnterMigration(after, track, price, now);
+    private entryRejection(id: BotId, mint: string, now: number): string | undefined {
+        const q = this.quotes.get(mint), t = this.tracks.get(mint), row = this.rows.get(mint)?.row;
+        if (!q || !t || !row || now - q.at > config.paperQuoteMaxAgeMs)
+            return "stale/missing quote";
+        if (now - t.migratedAt > config.paperMigrationEntryWindowSec * 1000)
+            return "entry window expired";
+        if (id === "hybrid" && t.score < config.paperHybridMinScore)
+            return "pre-score below threshold";
+        if (t.setup.phase === "rejected")
+            return "collapse exceeds maximum dip";
+        if (t.setup.phase !== "recovery" || t.setup.samples < config.paperMinPostSamples || now - t.migratedAt < config.paperMinSetupMs)
+            return "waiting for ordered dip/recovery";
+        const price = q.quoteSol / q.base;
+        const recovery = t.setup.recoveryPct(price);
+        if (recovery < (id === "hybrid" ? config.paperHybridRecoveryPct : config.paperMigrationRecoveryPct))
+            return "recovery too small";
+        if (price > t.setup.peak)
+            return "recovery already above setup peak";
+        if (q.quoteSol < config.paperMinQuoteSol)
+            return "insufficient quote liquidity";
+        if (buyQuote(q, config.paperPositionSol).impactPct > config.paperMaxImpactPct)
+            return "entry price impact too high";
+        if ((row.w10.buySellVolumeRatio ?? 0) < (id === "hybrid" ? 1.2 : 1.05) || row.w10.buys < 2 || row.w10.buySol < config.paperMinBuySol10)
+            return "insufficient post-migration buying";
+        return undefined;
     }
-  }
-
-  summaries(): PaperBotSummary[] {
-    return [
-      this.summary(this.ledgers.hybrid),
-      this.summary(this.ledgers.migration),
-    ];
-  }
-
-  recentEvents(): string[] {
-    return [...this.recent];
-  }
-
-  private summary(bot: BotLedger): PaperBotSummary {
-    const markedPosition = bot.open
-      ? bot.open.stakeSol * (bot.open.lastPrice / bot.open.entryPrice)
-      : 0;
-
-    return {
-      id: bot.id,
-      name: bot.name,
-      startingBalanceSol: config.paperStartingBalanceSol,
-      balanceSol: bot.cashSol + markedPosition,
-      realizedPnlSol: bot.realizedPnlSol,
-      openPositions: bot.open ? 1 : 0,
-      closedTrades: bot.closedTrades,
-      mode: "paper",
-      status: bot.open
-        ? `OPEN ${bot.open.symbol ?? shortMint(bot.open.mint)}`
-        : "SCANNING",
-    };
-  }
-
-  private async maybeEnterMigration(
-    row: TokenDashboardRow,
-    track: MigrationTrack,
-    price: number,
-    now: number,
-  ): Promise<void> {
-    const bot = this.ledgers.migration;
-    if (bot.tradedMints.has(row.mint)) return;
-
-    const setup = setupMetrics(track, price, now);
-    if (
-      setup.secondsSinceMigration > config.paperMigrationEntryWindowSec ||
-      setup.dipPct > -config.paperMigrationMinDipPct ||
-      setup.recoveryPct < config.paperMigrationRecoveryPct ||
-      track.postTrades < 3
-    ) {
-      return;
+    async tick(now = this.clock(), eventId?: string): Promise<void> {
+        for (const id of ids) {
+            const bot = this.ledgers[id];
+            if (bot.open)
+                await this.manage(bot, now, eventId);
+            const pending = bot.pending;
+            if (!pending)
+                continue;
+            if (now - pending.at > config.paperPendingTtlMs) {
+                this.health("entry_cancelled", { bot: id, mint: pending.mint, reason: "execution quote timeout" });
+                delete bot.pending;
+                continue;
+            }
+            const q = this.quotes.get(pending.mint);
+            if (!q || q.at < pending.at + config.paperExecutionDelayMs || now - q.at > config.paperQuoteMaxAgeMs)
+                continue;
+            const reject = this.entryRejection(id, pending.mint, now);
+            const slippage = ((q.quoteSol / q.base) / pending.signalPrice - 1) * 100;
+            if (reject || slippage > config.paperMaxEntrySlippagePct || q.pool !== pending.pool) {
+                this.health("entry_cancelled", { bot: id, mint: pending.mint, reason: reject ?? "entry slippage/pool changed" });
+                delete bot.pending;
+                continue;
+            }
+            delete bot.pending;
+            const stake = config.paperPositionSol, fee = stake * config.paperFeePctPerSide / 100;
+            if (bot.cashSol < stake + fee)
+                continue;
+            const fill = buyQuote(q, stake);
+            bot.cashSol -= stake + fee;
+            const pos: Position = { id: randomUUID(), mint: pending.mint, symbol: pending.symbol, pool: q.pool,
+                entryAt: now, entryPrice: stake / fill.tokens, tokens: fill.tokens, stakeSol: stake, entryFeeSol: fee,
+                lastValue: sellQuote(q, fill.tokens) * (1 - config.paperFeePctPerSide / 100), peakReturnPct: 0 };
+            bot.open = pos;
+            bot.tradedMints.push(pos.mint);
+            await this.commit({ ts: new Date(now).toISOString(), bot: id, action: "ENTRY", mint: pos.mint, symbol: pos.symbol,
+                priceRatio: pos.entryPrice / 1e9, stakeSol: stake, feeSol: fee, balanceAfterSol: bot.cashSol,
+                reasons: [...pending.reasons, `AMM impact ${fill.impactPct.toFixed(2)}%; delayed paper fill`],
+                positionId: pos.id, runId: this.options.runId, eventId, quoteSlot: q.slot, quoteSol: q.quoteSol, tokenBaseUnits: pos.tokens,
+                signalAt: new Date(pending.at).toISOString(), executionModel: "constant-product-v2-estimated-fees" });
+        }
+        for (const [mint, t] of this.tracks) {
+            if (now - t.migratedAt > 20 * 60000 && !this.openMints().includes(mint)) {
+                this.tracks.delete(mint);
+                this.quotes.delete(mint);
+                this.rows.delete(mint);
+            }
+        }
+        if (now - this.lastCheckpoint >= 1000 && this.openMints().length) {
+            await this.checkpoint();
+            this.lastCheckpoint = now;
+        }
     }
-
-    const ratio = row.w10.buySellVolumeRatio ?? 0;
-    if (ratio < 1.05 || row.w10.buys < 1) return;
-
-    await this.enter(bot, row, price, [
-      `Migration dip ${setup.dipPct.toFixed(1)}%`,
-      `Recovery from low +${setup.recoveryPct.toFixed(1)}%`,
-      `10s buy/sell volume ratio ${ratio.toFixed(2)}`,
-      "Pure migration strategy: no pre-migration score required",
-    ], now);
-  }
-
-  private async maybeEnterHybrid(
-    row: TokenDashboardRow,
-    track: MigrationTrack,
-    price: number,
-    now: number,
-  ): Promise<void> {
-    const bot = this.ledgers.hybrid;
-    if (bot.tradedMints.has(row.mint)) return;
-    if (track.preHybridScore < config.paperHybridMinScore) return;
-
-    const setup = setupMetrics(track, price, now);
-    if (
-      setup.secondsSinceMigration > config.paperMigrationEntryWindowSec ||
-      setup.dipPct > -config.paperMigrationMinDipPct ||
-      setup.recoveryPct < config.paperHybridRecoveryPct ||
-      track.postTrades < 3
-    ) {
-      return;
+    private async manage(bot: Ledger, now: number, eventId?: string): Promise<void> {
+        const p = bot.open!, q = this.quotes.get(p.mint);
+        const fresh = q && q.pool === p.pool && now - q.at <= config.paperQuoteMaxAgeMs;
+        if (!fresh && !p.staleReported) {
+            p.staleReported = true;
+            this.health("position_stale", { bot: bot.id, mint: p.mint });
+        }
+        const held = (now - p.entryAt) / 1000;
+        if (!p.exitRequested && held >= (bot.id === "migration" ? 120 : 180))
+            p.exitRequested = { at: now, reason: "wall-clock timeout" };
+        if (!fresh) {
+            if (!p.exitRequested && now - p.entryAt > config.paperQuoteMaxAgeMs)
+                p.exitRequested = { at: now, reason: "stale feed exit requested" };
+            return; // Unresolved is explicit; never manufacture a stale-price fill.
+        }
+        p.staleReported = false;
+        const proceeds = sellQuote(q, p.tokens), net = proceeds * (1 - config.paperFeePctPerSide / 100);
+        p.lastValue = net;
+        const ret = (net / (p.stakeSol + p.entryFeeSol) - 1) * 100;
+        p.peakReturnPct = Math.max(p.peakReturnPct, ret);
+        let reason: string | undefined;
+        if (ret <= (bot.id === "migration" ? -15 : -10))
+            reason = "net liquidation stop";
+        else if (ret >= (bot.id === "migration" ? config.paperMigrationTargetPct : 100))
+            reason = "net profit target";
+        else if (p.peakReturnPct >= (bot.id === "migration" ? config.paperMigrationTrailArmPct : 25) &&
+            ret <= p.peakReturnPct * (1 - (bot.id === "migration" ? config.paperMigrationTrailGivebackPct : 35) / 100))
+            reason = "profit giveback";
+        else {
+            const flow = this.rows.get(p.mint)?.row.w10;
+            if (bot.id === "hybrid" && ret >= 5 && flow && flow.sells > 0 && (flow.buySellVolumeRatio ?? 0) < 0.8)
+                reason = "profitable flow reversal";
+        }
+        if (!p.exitRequested && reason)
+            p.exitRequested = { at: now, reason };
+        if (!p.exitRequested || q.at < p.exitRequested.at + config.paperExecutionDelayMs)
+            return;
+        const fee = proceeds * config.paperFeePctPerSide / 100, pnl = net - p.stakeSol - p.entryFeeSol;
+        bot.cashSol += net;
+        bot.realizedPnlSol += pnl;
+        bot.closedTrades++;
+        delete bot.open;
+        await this.commit({ ts: new Date(now).toISOString(), bot: bot.id, action: "EXIT", mint: p.mint, symbol: p.symbol,
+            priceRatio: proceeds / p.tokens / 1e9, stakeSol: p.stakeSol, feeSol: fee, balanceAfterSol: bot.cashSol,
+            reasons: [p.exitRequested.reason, `Net paper P&L ${pnl.toFixed(6)} SOL`], pnlSol: pnl, pnlPct: ret,
+            positionId: p.id, runId: this.options.runId, eventId, quoteSlot: q.slot, quoteSol: q.quoteSol, tokenBaseUnits: p.tokens,
+            signalAt: new Date(p.exitRequested.at).toISOString(), executionModel: "constant-product-v2-estimated-fees" });
     }
-
-    const ratio = row.w10.buySellVolumeRatio ?? 0;
-    if (ratio < 1.2 || row.w10.buys < 1) return;
-
-    await this.enter(bot, row, price, [
-      `Pre-migration Hybrid score ${track.preHybridScore}`,
-      `Migration dip ${setup.dipPct.toFixed(1)}%`,
-      `Recovery from low +${setup.recoveryPct.toFixed(1)}%`,
-      `10s buy/sell volume ratio ${ratio.toFixed(2)}`,
-    ], now);
-  }
-
-  private async enter(
-    bot: BotLedger,
-    row: TokenDashboardRow,
-    price: number,
-    reasons: string[],
-    now: number,
-  ): Promise<void> {
-    const stake = Math.min(config.paperPositionSol, bot.cashSol);
-    const fee = stake * (config.paperFeePctPerSide / 100);
-    if (stake <= 0 || bot.cashSol < stake + fee) return;
-
-    bot.cashSol -= stake + fee;
-    bot.tradedMints.add(row.mint);
-    bot.open = {
-      mint: row.mint,
-      symbol: row.symbol,
-      entryAt: now,
-      entryPrice: price,
-      lastPrice: price,
-      stakeSol: stake,
-      entryFeeSol: fee,
-      peakReturnPct: 0,
-      entryReasons: reasons,
-    };
-
-    this.push(
-      `${bot.id.toUpperCase()} PAPER BUY ${row.symbol ?? shortMint(row.mint)} · ${stake.toFixed(3)} SOL`,
-    );
-
-    await this.journal.append({
-      ts: new Date(now).toISOString(),
-      bot: bot.id,
-      action: "ENTRY",
-      mint: row.mint,
-      symbol: row.symbol,
-      priceRatio: price,
-      stakeSol: stake,
-      feeSol: fee,
-      balanceAfterSol: bot.cashSol,
-      reasons,
-    });
-  }
-
-  private async manageOpenPosition(
-    botId: BotId,
-    row: TokenDashboardRow,
-    price: number,
-    now: number,
-  ): Promise<void> {
-    const bot = this.ledgers[botId];
-    const pos = bot.open;
-    if (!pos || pos.mint !== row.mint) return;
-
-    pos.lastPrice = price;
-    const returnPct = (price / pos.entryPrice - 1) * 100;
-    pos.peakReturnPct = Math.max(pos.peakReturnPct, returnPct);
-    const heldSec = (now - pos.entryAt) / 1000;
-
-    let reason: string | undefined;
-
-    if (botId === "migration") {
-      if (returnPct >= 100) reason = "2x target reached";
-      else if (returnPct <= -15) reason = "15% stop";
-      else if (heldSec >= 120) reason = "120s scalp timeout";
-    } else {
-      const flowRatio = row.w10.buySellVolumeRatio ?? 0;
-      if (returnPct >= 100) reason = "2x hard target reached";
-      else if (returnPct <= -10) reason = "10% hybrid stop";
-      else if (
-        pos.peakReturnPct >= 25 &&
-        returnPct <= pos.peakReturnPct * 0.65
-      ) {
-        reason = "35% giveback from >=25% peak";
-      } else if (returnPct >= 5 && flowRatio < 0.8 && row.w10.sells > 0) {
-        reason = "profitable + 10s order-flow reversal";
-      } else if (heldSec >= 180) {
-        reason = "180s hybrid timeout";
-      }
+    summaries(): PaperBotSummary[] {
+        return ids.map(id => {
+            const b = this.ledgers[id], p = b.open;
+            return { id, name: b.name, startingBalanceSol: this.startingBalance, balanceSol: b.cashSol + (p?.lastValue ?? 0),
+                realizedPnlSol: b.realizedPnlSol, openPositions: p ? 1 : 0, closedTrades: b.closedTrades, mode: "paper",
+                status: p ? (p.staleReported ? "STALE / UNRESOLVED" : p.exitRequested ? "EXIT PENDING" : "OPEN") + " " + (p.symbol ?? p.mint) : b.pending ? "ENTRY PENDING" : "SCANNING" };
+        });
     }
-
-    if (reason) {
-      await this.exit(bot, row, price, returnPct, reason, now);
+    recentEvents(): string[] { return [...this.recent]; }
+    private decision(track: Track, mint: string, reason: string): void {
+        const bot = reason.split(":")[0]!;
+        track.lastDecision ??= {};
+        if (track.lastDecision[bot] === reason)
+            return;
+        track.lastDecision[bot] = reason;
+        this.health("setup_decision", { mint, reason });
     }
-  }
-
-  private async exit(
-    bot: BotLedger,
-    row: TokenDashboardRow,
-    price: number,
-    grossReturnPct: number,
-    exitReason: string,
-    now: number,
-  ): Promise<void> {
-    const pos = bot.open;
-    if (!pos) return;
-
-    const grossProceeds = pos.stakeSol * (price / pos.entryPrice);
-    const exitFee = grossProceeds * (config.paperFeePctPerSide / 100);
-    const netProceeds = grossProceeds - exitFee;
-    const pnl =
-      netProceeds - pos.stakeSol - pos.entryFeeSol;
-    const pnlPct = (pnl / (pos.stakeSol + pos.entryFeeSol)) * 100;
-
-    bot.cashSol += netProceeds;
-    bot.realizedPnlSol += pnl;
-    bot.closedTrades += 1;
-    bot.open = undefined;
-
-    const reasons = [
-      exitReason,
-      `Gross move ${grossReturnPct >= 0 ? "+" : ""}${grossReturnPct.toFixed(1)}%`,
-      `Net paper P&L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)} SOL`,
-    ];
-
-    this.push(
-      `${bot.id.toUpperCase()} PAPER SELL ${row.symbol ?? shortMint(row.mint)} · ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)} SOL · ${exitReason}`,
-    );
-
-    await this.journal.append({
-      ts: new Date(now).toISOString(),
-      bot: bot.id,
-      action: "EXIT",
-      mint: row.mint,
-      symbol: row.symbol,
-      priceRatio: price,
-      stakeSol: pos.stakeSol,
-      feeSol: exitFee,
-      balanceAfterSol: bot.cashSol,
-      reasons,
-      pnlSol: pnl,
-      pnlPct,
-    });
-  }
-
-  private push(message: string): void {
-    const stamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
-    this.recent.unshift(`${stamp}  ${message}`);
-    if (this.recent.length > 40) this.recent.length = 40;
-  }
-}
-
-function setupMetrics(
-  track: MigrationTrack,
-  price: number,
-  now: number,
-): {
-  dipPct: number;
-  recoveryPct: number;
-  secondsSinceMigration: number;
-} {
-  const high = track.high ?? price;
-  const low = track.low ?? price;
-  return {
-    dipPct: (low / high - 1) * 100,
-    recoveryPct: (price / low - 1) * 100,
-    secondsSinceMigration: (now - track.migratedAt) / 1000,
-  };
-}
-
-function shortMint(mint: string): string {
-  return mint.length > 12 ? `${mint.slice(0, 5)}…${mint.slice(-4)}` : mint;
+    private async commit(entry: PaperJournalEntry): Promise<void> {
+        this.outbox.push(entry);
+        await this.checkpoint(); // Persist ledger and journal intent together before appending.
+        await this.flushOutbox();
+        this.recent.unshift(`${entry.bot.toUpperCase()} ${entry.action} ${entry.symbol ?? entry.mint} · ${entry.reasons[0]}`);
+        this.recent.length = Math.min(this.recent.length, 40);
+    }
+    private async flushOutbox(): Promise<void> {
+        for (const entry of this.outbox)
+            await this.journal.append(entry);
+        this.outbox = [];
+        await this.checkpoint();
+    }
+    private async checkpoint(): Promise<void> {
+        const path = this.options.statePath;
+        if (!path)
+            return;
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path + ".tmp", JSON.stringify({ schema: 3, startingBalance: this.startingBalance, ledgers: this.ledgers, outbox: this.outbox }), "utf8");
+        await rename(path + ".tmp", path);
+    }
+    async flush(): Promise<void> { await this.checkpoint(); await this.journal.flush(); }
 }

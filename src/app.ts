@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
 import { assertObserverConfig, config } from "./config.js";
 import { DashboardServer } from "./dashboard/server.js";
 import { LiveMetricsEngine } from "./engine/liveMetrics.js";
@@ -5,143 +8,146 @@ import { PaperTradingEngine } from "./engine/paperTrading.js";
 import { JsonlEventStore } from "./logging/eventStore.js";
 import { logger } from "./logging/logger.js";
 import { PaperJournal } from "./logging/paperJournal.js";
-import { formatObserverEvent } from "./market-data/format.js";
+import { createHealth } from "./logging/health.js";
 import { PumpCurveTracker } from "./market-data/pumpCurveTracker.js";
 import { PumpPortalClient } from "./market-data/pumpPortalClient.js";
 import { PumpSwapTracker } from "./market-data/pumpSwapTracker.js";
 import { SolanaAccountClient } from "./market-data/solanaAccountClient.js";
 import { SolanaRpcClient } from "./market-data/solanaRpcClient.js";
-import { TokenRegistry } from "./market-data/tokenRegistry.js";
+import bs58 from "bs58";
 import type { NormalizedMarketEvent } from "./types/market.js";
-
 assertObserverConfig();
-
-const store = new JsonlEventStore(config.eventLogPath);
-const registry = new TokenRegistry();
-const metrics = new LiveMetricsEngine(config.paperStartingBalanceSol);
-const journal = new PaperJournal(config.paperJournalPath);
-const paper = new PaperTradingEngine(config.paperStartingBalanceSol, journal);
-const solana = new SolanaAccountClient();
-const rpc = new SolanaRpcClient();
-const dashboard = new DashboardServer(
-  () => metrics.snapshot(80, paper.summaries(), paper.recentEvents()),
-  config.dashboardPort,
-);
-
-let curveTracker: PumpCurveTracker;
-let pumpSwapTracker: PumpSwapTracker;
-
-function isSolanaAddress(value: string | undefined): boolean {
-  return Boolean(value && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value));
+const runId = randomUUID(), health = createHealth(runId);
+const lockPath = config.paperStatePath + ".lock";
+await mkdir(dirname(lockPath), { recursive: true });
+try {
+    const lock = await open(lockPath, "wx");
+    await lock.writeFile(String(process.pid));
+    await lock.close();
 }
-
-function isSolanaPump(event: NormalizedMarketEvent): boolean {
-  if (event.chain && !event.chain.toLowerCase().includes("solana")) return false;
-  if (!isSolanaAddress(event.mint) || !isSolanaAddress(event.bondingCurveKey)) {
-    return false;
-  }
-
-  const venue = [event.pool, event.platform, event.source]
-    .filter((value): value is string => Boolean(value))
-    .join(" ")
-    .toLowerCase();
-
-  return venue.length === 0 || venue.includes("pump");
-}
-
-async function handleEvent(event: NormalizedMarketEvent): Promise<void> {
-  await store.append(event);
-
-  if (
-    (event.kind === "new_token" || event.kind === "migration") &&
-    (
-      (event.chain && !event.chain.toLowerCase().includes("solana")) ||
-      !isSolanaAddress(event.mint)
-    )
-  ) {
-    return;
-  }
-
-  const before = event.mint ? metrics.rowForMint(event.mint) : undefined;
-  metrics.ingest(event);
-  const after = event.mint ? metrics.rowForMint(event.mint) : undefined;
-  await paper.ingest(event, before, after);
-  const state = registry.apply(event);
-
-  if (event.kind === "new_token" || event.kind === "migration") {
-    logger.info(
-      {
-        kind: event.kind,
-        mint: event.mint,
-        trackedTokens: registry.size(),
-        watchedCurves: curveTracker.count(),
-      },
-      formatObserverEvent(event, state),
-    );
-  }
-
-  if (
-    event.kind === "new_token" &&
-    event.mint &&
-    event.bondingCurveKey &&
-    isSolanaPump(event)
-  ) {
-    curveTracker.watch(event.mint, event.bondingCurveKey);
-  }
-
-  if (event.kind === "migration" && event.mint && isSolanaAddress(event.mint)) {
-    if (state?.bondingCurveKey) {
-      curveTracker.unwatch(state.bondingCurveKey);
+catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST")
+        throw error;
+    const pid = Number(await readFile(lockPath, "utf8"));
+    if (!Number.isInteger(pid) || pid <= 0)
+        throw new Error(`Invalid paper lock: ${lockPath}`);
+    try {
+        process.kill(pid, 0);
+        throw new Error("Another paper lab is running");
     }
-    void pumpSwapTracker.watchMint(event.mint);
-  }
-
-  if (event.kind === "trade" && event.txType?.startsWith("inferred_")) {
-    const rawAmount = event.raw.solDeltaLamports;
-    const lamports =
-      typeof rawAmount === "string" ? Number(rawAmount) : Number.NaN;
-    const sol = Number.isFinite(lamports) ? lamports / 1_000_000_000 : undefined;
-
-    logger.info(
-      {
-        mint: event.mint,
-        side: event.txType.replace("inferred_", ""),
-        sol,
-        source: "free-solana-wss",
-      },
-      `[FREE TRADE] ${event.txType.replace("inferred_", "").toUpperCase()} ${
-        sol !== undefined ? `${sol.toFixed(4)} SOL` : ""
-      }`,
-    );
-  }
+    catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ESRCH")
+            throw e;
+    }
+    await unlink(lockPath);
+    const lock = await open(lockPath, "wx");
+    await lock.writeFile(String(process.pid));
+    await lock.close();
 }
-
-curveTracker = new PumpCurveTracker(solana, handleEvent);
-pumpSwapTracker = new PumpSwapTracker(solana, rpc, handleEvent);
-const pumpPortal = new PumpPortalClient(handleEvent);
-
-function shutdown(signal: string): void {
-  logger.info({ signal }, "shutting down paper lab");
-  pumpPortal.stop();
-  solana.stop();
-  setTimeout(() => process.exit(0), 50);
+const store = new JsonlEventStore(config.eventLogPath), journal = new PaperJournal(config.paperJournalPath);
+const metrics = new LiveMetricsEngine(config.paperStartingBalanceSol);
+const paper = new PaperTradingEngine(config.paperStartingBalanceSol, journal, { statePath: config.paperStatePath, runId, health: health.emit });
+await paper.restore();
+const solana = new SolanaAccountClient(health.emit), rpc = new SolanaRpcClient(health.emit);
+const migrations = new Set<string>(), curves = new Map<string, string>();
+let sequence = 0, tail: Promise<void> = Promise.resolve(), stopping = false, failed = false;
+let lastMarketAt = 0, lastSwapAt = 0;
+function enqueue(task: () => Promise<void>): Promise<void> {
+    const result = tail.then(() => { if (failed)
+        return; health.check(); return task(); });
+    tail = result.catch(error => { failed = true; logger.error({ error }, "paper lab paused after processing failure"); health.emit("fatal_processing_error", { error: String(error) }); void shutdown("processing failure", 1); });
+    return result;
 }
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-
+function validAddress(s: string | undefined): boolean { try {
+    return Boolean(s && bs58.decode(s).length === 32);
+}
+catch {
+    return false;
+} }
+function handleEvent(event: NormalizedMarketEvent): Promise<void> {
+    if (stopping)
+        return Promise.resolve();
+    event = { ...event, runId, sequence: ++sequence, eventId: `${runId}:${sequence}` };
+    return enqueue(async () => {
+        await store.append(event);
+        if (event.kind === "system") {
+            health.emit("upstream_control", { raw: event.raw });
+            return;
+        }
+        if (!validAddress(event.mint))
+            return;
+        lastMarketAt = Date.now();
+        if (event.kind === "migration") {
+            if ((event.pool ?? event.raw.pool) !== "pump-amm") {
+                health.emit("unsupported_migration_venue", { mint: event.mint, pool: event.pool ?? event.raw.pool });
+                return;
+            }
+            if (migrations.has(event.mint!)) {
+                health.emit("duplicate_migration", { mint: event.mint, signature: event.signature });
+                return;
+            }
+            migrations.add(event.mint!);
+        }
+        const before = metrics.rowForMint(event.mint!);
+        metrics.ingest(event);
+        await paper.ingest(event, before, metrics.rowForMint(event.mint!));
+        if (event.kind === "new_token" && validAddress(event.bondingCurveKey) && (event.pool ?? event.raw.pool) === "pump" && event.raw.is_mayhem_mode !== true) {
+            curves.set(event.mint!, event.bondingCurveKey!);
+            curveTracker.watch(event.mint!, event.bondingCurveKey!);
+        }
+        if (event.kind === "migration") {
+            const key = curves.get(event.mint!);
+            if (key) {
+                curveTracker.unwatch(key);
+                curves.delete(event.mint!);
+            }
+            void pumpSwapTracker.watchMint(event.mint!);
+        }
+        if (event.raw.source === "solana_pumpswap_vaults")
+            lastSwapAt = Date.now();
+    });
+}
+const curveTracker = new PumpCurveTracker(solana, handleEvent, health.emit);
+const pumpSwapTracker = new PumpSwapTracker(solana, rpc, handleEvent, health.emit, mint => paper.openMints().includes(mint));
+const pumpPortal = new PumpPortalClient(handleEvent, health.emit);
+const dashboard = new DashboardServer(() => ({ ...metrics.snapshot(80, paper.summaries(), paper.recentEvents()),
+    health: { runId, mode: failed ? "PAUSED" : lastMarketAt && Date.now() - lastMarketAt < 30000 ? "RECEIVING DATA" : "WAITING / STALE FEED",
+        lastMarketAt, lastSwapAt } }), config.dashboardPort);
+const clock = setInterval(() => { void enqueue(() => paper.tick()).catch(() => { }); }, 250);
+const refresh = setInterval(() => { for (const mint of paper.openMints())
+    void pumpSwapTracker.refresh(mint); }, 2000);
+const heartbeat = setInterval(() => health.emit("heartbeat", { lastMarketAt, lastSwapAt, curves: curveTracker.count(), pools: pumpSwapTracker.count(), bots: paper.summaries() }), 30000);
+async function shutdown(signal: string, code = 0): Promise<void> {
+    if (stopping)
+        return;
+    stopping = true;
+    clearInterval(clock);
+    clearInterval(refresh);
+    clearInterval(heartbeat);
+    pumpPortal.stop();
+    pumpSwapTracker.stop();
+    solana.stop();
+    try {
+        await tail;
+        await paper.flush();
+        await store.flush();
+        health.emit("session_end", { signal });
+        await health.flush();
+        await unlink(lockPath);
+    }
+    catch (error) {
+        logger.error({ error }, "shutdown flush failed");
+        code = 1;
+    }
+    process.exit(code);
+}
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+const safeConfig = Object.fromEntries(Object.entries(config).filter(([k]) => !k.toLowerCase().includes("key") && !k.toLowerCase().includes("url")));
+health.emit("session_start", { version: "0.3.0", schema: 3, runId, config: safeConfig, executionModel: "constant-product-v2-estimated-fees", restoredOpen: paper.openMints() });
 dashboard.start();
 solana.start();
 pumpPortal.start();
-
-logger.info(
-  {
-    dashboard: `http://127.0.0.1:${config.dashboardPort}`,
-    mode: "paper-only",
-    paidTradeFeeds: false,
-    preMigration: "free bonding-curve accountSubscribe",
-    postMigration: "free PumpSwap vault accountSubscribe",
-    paperJournal: config.paperJournalPath,
-  },
-  "Memecoiner Paper Lab started",
-);
+for (const mint of paper.openMints())
+    void pumpSwapTracker.watchMint(mint);
+logger.info({ version: "0.3.0", dashboard: `http://127.0.0.1:${config.dashboardPort}`, runId }, "Paper lab started; no real orders");
