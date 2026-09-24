@@ -1,6 +1,6 @@
 {
   "name": "memecoiner",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Zero-cost live Solana memecoin observer and paper-strategy comparison lab",

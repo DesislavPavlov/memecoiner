@@ -8,6 +8,7 @@ export interface PumpSwapPool {
     index: number;
     creator: string;
     unsupportedMode: boolean;
+    virtualQuoteReserves?: bigint;
     baseMint: string;
     quoteMint: string;
     baseVault: string;
@@ -29,12 +30,16 @@ export function decodePumpSwapPool(address: string, dataBase64: string): PumpSwa
     // lp_mint: 107..138
     // pool_base_token_account: 139..170
     // pool_quote_token_account: 171..202
+    if (data.length > 245 && data.length < 261) throw new Error("Truncated virtual quote reserves");
+    const virtualQuoteReserves = data.length >= 261
+        ? BigInt.asIntN(128, data.readBigUInt64LE(245) | (data.readBigUInt64LE(253) << 64n)) : 0n;
     return {
         address,
         index: data.readUInt16LE(9),
         creator: bs58.encode(data.subarray(11, 43)),
-        // Current appended flags + virtual quote reserve; unsupported AMM modes must not use x*y=k fills.
-        unsupportedMode: (data[243] ?? 0) !== 0 || (data[244] ?? 0) !== 0 || data.subarray(245, 261).some(v => v !== 0),
+        // Virtual reserves are supported by pricing against real + virtual quote reserves.
+        unsupportedMode: (data[243] ?? 0) !== 0 || (data[244] ?? 0) !== 0,
+        virtualQuoteReserves,
         baseMint: bs58.encode(data.subarray(43, 75)),
         quoteMint: bs58.encode(data.subarray(75, 107)),
         baseVault: bs58.encode(data.subarray(139, 171)),

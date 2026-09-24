@@ -42,7 +42,9 @@
   let snapshot=null;
   function render(){
     if(!snapshot)return;
-    document.getElementById("health").textContent="LIVE · "+new Date(snapshot.generatedAt).toLocaleTimeString();
+    const h=snapshot.health;
+    document.getElementById("health").textContent=h ? h.mode+" · "+h.activePools+" PumpSwap pools · "+h.discoveryFailures+" discovery failures" : "LIVE · "+new Date(snapshot.generatedAt).toLocaleTimeString();
+    document.getElementById("health").title=h?.lastDiscoveryError??"";
     document.getElementById("count").textContent=snapshot.trackedTokens+" tracked";
     document.getElementById("bots").innerHTML=snapshot.bots.map(b=>`
       <div class="card"><div class="botline"><div class="botname">${esc(b.name)}</div><span class="status">${esc(b.mode.toUpperCase())}</span></div>
@@ -52,7 +54,7 @@
     document.getElementById("empty").style.display=rows.length?"none":"block";
     document.getElementById("rows").innerHTML=rows.map(r=>`
       <tr><td><div class="sym">${esc(r.symbol??"UNKNOWN")}</div><div class="mint">${esc(r.mint.slice(0,8))}…${esc(r.mint.slice(-5))}</div></td>
-      <td>${age(r.ageSeconds)}</td><td class="${r.migrated?"warn":"muted"}">${r.migrated?"MIGRATED":"CURVE"}</td>
+      <td>${age(r.ageSeconds)}</td><td class="${r.migrated?"warn":"muted"}">${r.migrated?(r.postMigrationLive?"PUMPSWAP LIVE":"WAIT PUMPSWAP DATA"):"CURVE"}</td>
       <td>${r.w10.buys}/${r.w10.sells}</td><td class="good">${sol(r.w60.buySol)}</td><td class="bad">${sol(r.w60.sellSol)}</td>
       <td>${ratio(r.w60.buySellVolumeRatio)}</td><td class="${(r.w30.priceChangePct??0)>=0?"good":"bad"}">${pct(r.w30.priceChangePct)}</td>
       <td class="hasreason"><span class="score ${statusClass(r.hybrid.status)}">${r.hybrid.score??"—"}</span> <span class="status">${esc(r.hybrid.status)}</span><div class="reason">${r.hybrid.reasons.map(esc).join("<br>")}</div></td>

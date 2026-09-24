@@ -135,8 +135,12 @@ export class PaperTradingEngine {
         if (r.source !== "solana_pumpswap_vaults" || r.coherent !== true || typeof r.pool !== "string")
             return;
         const base = Number(r.baseReserve), quoteSol = Number(r.quoteReserve) / 1e9, slot = Number(r.slot);
-        if (![base, quoteSol, slot].every(v => Number.isFinite(v) && v > 0)) {
+        const realQuoteSol = r.realQuoteReserve === undefined ? quoteSol : Number(r.realQuoteReserve) / 1e9;
+        if (![base, quoteSol, slot].every(v => Number.isFinite(v) && v > 0) || !Number.isFinite(realQuoteSol) || realQuoteSol < 0) {
             this.quotes.delete(mint);
+            const track = this.tracks.get(mint);
+            if (track) track.setup = new DipSetup(config.paperMigrationMinDipPct, config.paperMaxDipPct);
+            for (const id of ids) if (this.ledgers[id].pending?.mint === mint) delete this.ledgers[id].pending;
             this.health("invalid_pool_quote", { mint, slot });
             await this.tick(now);
             return;
@@ -149,7 +153,7 @@ export class PaperTradingEngine {
             if (track) track.setup = new DipSetup(config.paperMigrationMinDipPct, config.paperMaxDipPct);
             for (const id of ids) if (this.ledgers[id].pending?.mint === mint) delete this.ledgers[id].pending;
         }
-        const quote: PoolQuote = { pool: r.pool, base, quoteSol, slot, at, generation: typeof r.generation === "number" ? r.generation : undefined };
+        const quote: PoolQuote = { pool: r.pool, base, quoteSol, realQuoteSol, slot, at, generation: typeof r.generation === "number" ? r.generation : undefined };
         this.quotes.set(mint, quote);
         if (after)
             this.rows.set(mint, { row: after, at });
@@ -194,7 +198,7 @@ export class PaperTradingEngine {
             return "recovery too small";
         if (price > t.setup.peak)
             return "recovery already above setup peak";
-        if (q.quoteSol < config.paperMinQuoteSol)
+        if ((q.realQuoteSol ?? q.quoteSol) < config.paperMinQuoteSol)
             return "insufficient quote liquidity";
         if (buyQuote(q, config.paperPositionSol).impactPct > config.paperMaxImpactPct)
             return "entry price impact too high";
@@ -240,7 +244,7 @@ export class PaperTradingEngine {
                 priceRatio: pos.entryPrice / 1e9, stakeSol: stake, feeSol: fee, balanceAfterSol: bot.cashSol,
                 reasons: [...pending.reasons, `AMM impact ${fill.impactPct.toFixed(2)}%; delayed paper fill`],
                 positionId: pos.id, runId: this.options.runId, eventId, quoteSlot: q.slot, quoteSol: q.quoteSol, tokenBaseUnits: pos.tokens,
-                signalAt: new Date(pending.at).toISOString(), executionModel: "constant-product-v2-estimated-fees" });
+                signalAt: new Date(pending.at).toISOString(), executionModel: "constant-product-v3-effective-reserves-estimated-fees" });
         }
         for (const [mint, t] of this.tracks) {
             if (now - t.migratedAt > 20 * 60000 && !this.openMints().includes(mint)) {
@@ -271,6 +275,11 @@ export class PaperTradingEngine {
         }
         p.staleReported = false;
         const proceeds = sellQuote(q, p.tokens), net = proceeds * (1 - config.paperFeePctPerSide / 100);
+        if (proceeds > (q.realQuoteSol ?? q.quoteSol)) {
+            p.staleReported = true;
+            this.health("exit_insufficient_real_liquidity", { mint: p.mint, bot: bot.id });
+            return;
+        }
         p.lastValue = net;
         const ret = (net / (p.stakeSol + p.entryFeeSol) - 1) * 100;
         p.peakReturnPct = Math.max(p.peakReturnPct, ret);
@@ -300,7 +309,7 @@ export class PaperTradingEngine {
             priceRatio: proceeds / p.tokens / 1e9, stakeSol: p.stakeSol, feeSol: fee, balanceAfterSol: bot.cashSol,
             reasons: [p.exitRequested.reason, `Net paper P&L ${pnl.toFixed(6)} SOL`], pnlSol: pnl, pnlPct: ret,
             positionId: p.id, runId: this.options.runId, eventId, quoteSlot: q.slot, quoteSol: q.quoteSol, tokenBaseUnits: p.tokens,
-            signalAt: new Date(p.exitRequested.at).toISOString(), executionModel: "constant-product-v2-estimated-fees" });
+            signalAt: new Date(p.exitRequested.at).toISOString(), executionModel: "constant-product-v3-effective-reserves-estimated-fees" });
     }
     summaries(): PaperBotSummary[] {
         return ids.map(id => {

@@ -1,7 +1,8 @@
 export interface PoolQuote {
     pool: string;
     base: number; // token base units; do not assume mint decimals
-    quoteSol: number;
+    quoteSol: number; // effective reserves (real + virtual)
+    realQuoteSol?: number;
     at: number;
     slot: number;
     generation?: number;

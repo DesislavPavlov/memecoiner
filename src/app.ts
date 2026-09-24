@@ -112,7 +112,7 @@ const pumpSwapTracker = new PumpSwapTracker(solana, rpc, handleEvent, health.emi
 const pumpPortal = new PumpPortalClient(handleEvent, health.emit);
 const dashboard = new DashboardServer(() => ({ ...metrics.snapshot(80, paper.summaries(), paper.recentEvents()),
     health: { runId, mode: failed ? "PAUSED" : lastMarketAt && Date.now() - lastMarketAt < 30000 ? "RECEIVING DATA" : "WAITING / STALE FEED",
-        lastMarketAt, lastSwapAt } }), config.dashboardPort);
+        lastMarketAt, lastSwapAt, ...pumpSwapTracker.diagnostics() } }), config.dashboardPort);
 const clock = setInterval(() => { void enqueue(() => paper.tick()).catch(() => { }); }, 250);
 const refresh = setInterval(() => { for (const mint of paper.openMints())
     void pumpSwapTracker.refresh(mint); }, 2000);
@@ -144,10 +144,10 @@ async function shutdown(signal: string, code = 0): Promise<void> {
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 const safeConfig = Object.fromEntries(Object.entries(config).filter(([k]) => !k.toLowerCase().includes("key") && !k.toLowerCase().includes("url")));
-health.emit("session_start", { version: "0.3.0", schema: 3, runId, config: safeConfig, executionModel: "constant-product-v2-estimated-fees", restoredOpen: paper.openMints() });
+health.emit("session_start", { version: "0.3.1", schema: 3, runId, config: safeConfig, executionModel: "constant-product-v3-effective-reserves-estimated-fees", restoredOpen: paper.openMints() });
 dashboard.start();
 solana.start();
 pumpPortal.start();
 for (const mint of paper.openMints())
     void pumpSwapTracker.watchMint(mint);
-logger.info({ version: "0.3.0", dashboard: `http://127.0.0.1:${config.dashboardPort}`, runId }, "Paper lab started; no real orders");
+logger.info({ version: "0.3.1", dashboard: `http://127.0.0.1:${config.dashboardPort}`, runId }, "Paper lab started; no real orders");

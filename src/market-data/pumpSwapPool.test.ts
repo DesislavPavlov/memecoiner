@@ -45,3 +45,13 @@ test("canonical PDA matches the official PumpSwap documented pool vector", () =>
         address: "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J", creator: "9XDYTfQKwW8sHPqnFdUreMmtmffmkHVPGTNV2e3LKxNW"
     });
 });
+
+
+test("virtual reserves decode signed i128, legacy absence, and reject truncated fields", () => {
+    const d = Buffer.alloc(261);
+    createHash("sha256").update("account:Pool").digest().copy(d, 0, 0, 8);
+    d.fill(255, 245, 261);
+    assert.equal(decodePumpSwapPool("pool", d.toString("base64")).virtualQuoteReserves, -1n);
+    assert.equal(decodePumpSwapPool("pool", d.subarray(0, 243).toString("base64")).virtualQuoteReserves, 0n);
+    assert.throws(() => decodePumpSwapPool("pool", d.subarray(0, 250).toString("base64")), /Truncated/);
+});

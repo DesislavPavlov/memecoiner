@@ -9,7 +9,7 @@ import { PaperJournal } from "../logging/paperJournal.js";
 import type { NormalizedMarketEvent } from "../types/market.js";
 import { config } from "../config.js";
 const mint = "test-mint";
-async function lab(t: TestContext, hybridScore = 0) {
+async function lab(t: TestContext, hybridScore = 0, realLiquidity?: number) {
     const dir = await mkdtemp(join(tmpdir(), "memecoiner-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     let now = 1800000000000;
@@ -26,7 +26,7 @@ async function lab(t: TestContext, hybridScore = 0) {
             txType: kind === "trade" ? "inferred_swap_" + side : undefined,
             virtualSolReserves: liquidity * 1e9, virtualTokenReserves: liquidity * 1e9 / price,
             raw: kind === "migration" ? { pool: "pump-amm" } : { source: "solana_pumpswap_vaults", pool: "canonical-pool", slot: Math.floor(now / 400), coherent: true,
-                baseReserve: String(liquidity * 1e9 / price), quoteReserve: String(liquidity * 1e9), solDeltaLamports: side === "buy" ? "2000000000" : "200000000" } };
+                realQuoteReserve: realLiquidity === undefined ? undefined : String(realLiquidity * 1e9), baseReserve: String(liquidity * 1e9 / price), quoteReserve: String(liquidity * 1e9), solDeltaLamports: side === "buy" ? "2000000000" : "200000000" } };
         const before = metrics.rowForMint(mint);
         metrics.ingest(e);
         await paper.ingest(e, kind === "migration" && hybridScore ? { ...metrics.rowForMint(mint)!, hybrid: { status: "PRIME WATCH", score: hybridScore, reasons: [] } } : before, metrics.rowForMint(mint));
@@ -53,7 +53,7 @@ test("ordered dip waits for delayed fresh quote and applies reserve-based fills"
     const entries = await l.rows();
     assert.equal(entries.length, 1);
     assert.ok(entries[0].tokenBaseUnits < .25 * 1e9 / .94);
-    assert.equal(entries[0].executionModel, "constant-product-v2-estimated-fees");
+    assert.equal(entries[0].executionModel, "constant-product-v3-effective-reserves-estimated-fees");
     await l.send("trade", .7, "sell"); // stop signal, never same-event fill
     assert.equal(l.paper.summaries()[1]!.openPositions, 1);
     await l.send("snapshot", .69);
@@ -154,4 +154,13 @@ test("empty liquidity invalidates an old quote instead of filling a pending orde
  const l=await lab(t);await l.setup();await l.send("snapshot",.94,"buy",0);
  l.advance(600);await l.paper.tick();assert.equal(l.paper.summaries()[1]!.openPositions,0);
  assert.equal((await l.rows()).length,0);
+});
+
+
+test("virtual liquidity cannot satisfy the real liquidity entry minimum", async (t) => {
+    const l = await lab(t, 0, .05);
+    await l.setup(100);
+    await l.send("trade", .94);
+    assert.deepEqual(await l.rows(), []);
+    assert.ok(l.health.some(x => String(x.detail?.reason).includes("liquidity")));
 });
