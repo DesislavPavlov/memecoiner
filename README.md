@@ -63,3 +63,11 @@ Validate a short new session before leaving it overnight: verify both bots remai
 `npm ci`, `npm run check`, `npm run build`. Tests cover quiet-feed timeout/recovery, real ordered dips versus rallies, low liquidity, delayed execution, restart recovery, duplicate migrations, coherent vault handling and log rotation. CI uses a locked dependency graph on Node 20.
 
 Canonical pool validation follows the [official PumpSwap pool layout](https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_README.md) and [canonical creator definition](https://github.com/pump-fun/pump-public-docs/blob/main/docs/FEE_PROGRAM_README.md). Fee rates are intentionally labeled estimated because the protocol's current schedule is dynamic.
+
+## v0.3.1: PumpSwap discovery repair
+
+v0.3.0 rejected pools with nonzero virtual quote reserves. In the affected runtime, all 150 discovery attempts failed, so both paper strategies had no PumpSwap input. v0.3.1 supports signed virtual quote reserves and prices against real plus virtual reserves, per the [official PumpSwap quoting specification](https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_README.md#quoting-effective-quote-reserves). Actual vault liquidity remains separate for entry safeguards and sell availability. Mayhem and cashback modes remain excluded.
+
+Pool metadata is monitored and refreshed with vault balances. A reserve-model change invalidates the previous quote and rebaselines sampling. The dashboard shows active PumpSwap pools, discovery failures and the latest error on hover. Strategy thresholds are unchanged. Existing paper state is preserved.
+
+After pulling, restart the bot and refresh the dashboard. A successful feed produces active pools and PUMPSWAP LIVE rows; trades still require a qualifying dip/recovery setup. Regression coverage includes a recorded mainnet pool, signed reserve decoding, real-liquidity gating and metadata changes. A live read-only check confirmed pool discovery, vault reads and inferred buy/sell flow.

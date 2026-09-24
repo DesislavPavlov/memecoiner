@@ -37,3 +37,14 @@ test("RPC errors are explicit and reported instead of interpreted as absent pool
     await assert.rejects(new SolanaRpcClient(type => errors.push(type)).findCanonicalPumpSwapPool(mint), /RPC/);
     assert.deepEqual(errors, ["rpc_failure"]);
 });
+
+
+test("recorded mainnet virtual-reserve pool passes discovery", async (t) => {
+    const { readFileSync } = await import("node:fs");
+    const fixture = JSON.parse(readFileSync("src/market-data/fixtures/pumpSwapVirtual.json", "utf8"));
+    t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ result: { value: fixture.account } })));
+    const pool = await new SolanaRpcClient().findCanonicalPumpSwapPool(fixture.mint);
+    assert.equal(pool!.address, fixture.address);
+    assert.equal(pool!.virtualQuoteReserves, 17584505399n);
+    assert.equal(pool!.unsupportedMode, false);
+});

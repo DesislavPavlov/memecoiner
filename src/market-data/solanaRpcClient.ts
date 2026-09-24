@@ -12,6 +12,7 @@ export interface PoolSnapshot {
     base: bigint;
     quote: bigint;
     slot: number;
+    virtualQuoteReserves?: bigint;
 }
 export class SolanaRpcClient {
     private id = 1;
@@ -27,8 +28,9 @@ export class SolanaRpcClient {
         if (result.value.owner !== PUMP_AMM_PROGRAM_ID)
             throw new Error("Pool owner mismatch");
         const pool = decodePumpSwapPool(expected.address, result.value.data[0]);
-        if (pool.index !== 0 || pool.creator !== expected.creator || pool.baseMint !== baseMint || pool.quoteMint !== WRAPPED_SOL_MINT || pool.unsupportedMode)
-            throw new Error("Unsupported or invalid canonical pool");
+        if (pool.index !== 0 || pool.creator !== expected.creator || pool.baseMint !== baseMint || pool.quoteMint !== WRAPPED_SOL_MINT )
+            throw new Error("Invalid canonical pool identity");
+        if (pool.unsupportedMode) throw new Error("Unsupported pool mode: mayhem or cashback");
         return pool;
     }
     async getPoolSnapshot(pool: PumpSwapPool, minContextSlot = 0): Promise<PoolSnapshot> {
@@ -38,15 +40,19 @@ export class SolanaRpcClient {
             };
             value: (Account | null)[];
         }>("getMultipleAccounts", [
-            [pool.baseVault, pool.quoteVault], { commitment: "confirmed", encoding: "base64", ...(minContextSlot ? { minContextSlot } : {}) }
+            [pool.baseVault, pool.quoteVault, pool.address], { commitment: "confirmed", encoding: "base64", ...(minContextSlot ? { minContextSlot } : {}) }
         ]);
-        const [base, quote] = result.value;
+        const [base, quote, metadata] = result.value;
+        if (!metadata || metadata.owner !== PUMP_AMM_PROGRAM_ID) throw new Error("Missing/invalid pool metadata");
+        const current = decodePumpSwapPool(pool.address, metadata.data[0]);
+        if (current.baseMint !== pool.baseMint || current.quoteMint !== pool.quoteMint || current.creator !== pool.creator || current.index !== pool.index || current.baseVault !== pool.baseVault || current.quoteVault !== pool.quoteVault || current.unsupportedMode)
+            throw new Error("Pool metadata changed or unsupported");
         const owners = ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"];
         if (!base || !quote || !owners.includes(base.owner) || !owners.includes(quote.owner))
             throw new Error("Missing/invalid vault owners");
         if (result.context.slot < minContextSlot)
             throw new Error("Stale RPC context");
-        return { base: validateVault(base.data[0], pool.baseMint, pool.address), quote: validateVault(quote.data[0], pool.quoteMint, pool.address), slot: result.context.slot };
+        return { base: validateVault(base.data[0], pool.baseMint, pool.address), quote: validateVault(quote.data[0], pool.quoteMint, pool.address), slot: result.context.slot, virtualQuoteReserves: current.virtualQuoteReserves };
     }
     private call<T>(method: string, params: unknown[]): Promise<T> {
         // Bound concurrency and rate for the free endpoint. Every request has a timeout.
