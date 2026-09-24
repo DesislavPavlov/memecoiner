@@ -8,3 +8,8 @@ data/*.db
 data/*.db-*
 *.log
 .DS_Store
+
+data/*.json
+data/*.json.*
+data/*.gz
+data/*.lock
